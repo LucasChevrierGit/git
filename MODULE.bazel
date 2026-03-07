@@ -1,0 +1,7 @@
+module(
+    name = "mini_git",
+    version = "1.0",
+)
+
+bazel_dep(name = "bazel_skylib", version = "1.4.2")
+bazel_dep(name = "rules_java", version = "8.6.4")
