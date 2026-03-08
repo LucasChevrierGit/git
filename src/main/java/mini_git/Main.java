@@ -10,6 +10,8 @@ import picocli.CommandLine;
     subcommands = {
         InitCommand.class,
         StatusCommand.class,
+        AddCommand.class,
+        RestoreCommand.class
     }
 )
 public class Main implements Runnable {
