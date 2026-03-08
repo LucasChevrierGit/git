@@ -9,6 +9,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
@@ -18,9 +19,16 @@ public class PushCommand implements Runnable {
     private static final String ANSI_GREEN = "\u001B[32m";
     private static final String ANSI_RED = "\u001B[31m";
     private static final String ANSI_RESET = "\u001B[0m";
+    private static final String API_BASE = "https://api.github.com/repos/";
 
     private final Path configPath = Path.of(".minigit", "config");
     private final Path indexPath = Path.of(".minigit", "index");
+
+    @CommandLine.Option(names = {"-m", "--message"}, description = "Commit message", defaultValue = "minigit push")
+    private String message;
+
+    @CommandLine.Option(names = {"--branch"}, description = "Branch to push to", defaultValue = "master")
+    private String branch;
 
     @Override
     public void run() {
@@ -35,7 +43,6 @@ public class PushCommand implements Runnable {
             return;
         }
 
-        // Parse owner/repo from URL like https://github.com/owner/repo
         String[] parts = url.replace("https://github.com/", "").split("/");
         if (parts.length < 2) {
             System.err.println("Invalid remote URL: " + url);
@@ -63,95 +70,152 @@ public class PushCommand implements Runnable {
         }
 
         HttpClient client = HttpClient.newHttpClient();
-        int success = 0;
-        int failed = 0;
+        String apiBase = API_BASE + owner + "/" + repo;
 
-        for (String line : indexLines) {
-            String[] lineParts = line.split(" ", 2);
-            if (lineParts.length < 2) continue;
+        try {
+            // Step 1: Get current HEAD ref
+            String refResponse = getJson(client, apiBase + "/git/refs/heads/" + branch, token);
+            String headSha = extractJsonValue(refResponse, "sha");
 
-            String filePath = lineParts[1];
-            Path file = Path.of(filePath);
+            // Step 2: Get base tree SHA
+            String commitResponse = getJson(client, apiBase + "/git/commits/" + headSha, token);
+            String baseTreeSha = extractNestedJsonValue(commitResponse, "tree", "sha");
 
-            if (!Files.exists(file)) {
-                System.out.println(ANSI_RED + "SKIP " + filePath + " (file not found)" + ANSI_RESET);
-                failed++;
-                continue;
-            }
+            // Step 3: Create a blob for each staged file
+            List<String> treeParts = new ArrayList<>();
+            int success = 0;
+            int failed = 0;
 
-            try {
-                byte[] content = Files.readAllBytes(file);
-                String encoded = Base64.getEncoder().encodeToString(content);
+            for (String line : indexLines) {
+                String[] lineParts = line.split(" ", 2);
+                if (lineParts.length < 2) continue;
 
-                // Check if file already exists on GitHub (need its SHA to update)
-                String sha = getFileSha(client, owner, repo, filePath, token);
+                String filePath = lineParts[1];
+                Path file = Path.of(filePath);
 
-                String jsonBody;
-                if (sha != null) {
-                    jsonBody = "{\"message\":\"minigit push: " + filePath + "\","
-                            + "\"content\":\"" + encoded + "\","
-                            + "\"sha\":\"" + sha + "\"}";
-                } else {
-                    jsonBody = "{\"message\":\"minigit push: " + filePath + "\","
-                            + "\"content\":\"" + encoded + "\"}";
+                if (!Files.exists(file)) {
+                    System.out.println(ANSI_RED + "SKIP " + filePath + " (file not found)" + ANSI_RESET);
+                    failed++;
+                    continue;
                 }
 
-                String apiUrl = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + filePath;
+                try {
+                    byte[] content = Files.readAllBytes(file);
+                    String encoded = Base64.getEncoder().encodeToString(content);
 
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(apiUrl))
-                        .header("Authorization", "Bearer " + token)
-                        .header("Accept", "application/vnd.github+json")
-                        .header("Content-Type", "application/json")
-                        .PUT(HttpRequest.BodyPublishers.ofString(jsonBody))
-                        .build();
+                    String blobBody = "{\"content\":\"" + encoded + "\",\"encoding\":\"base64\"}";
+                    String blobResponse = postJson(client, apiBase + "/git/blobs", token, blobBody);
+                    String blobSha = extractJsonValue(blobResponse, "sha");
 
-                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-                if (response.statusCode() == 200 || response.statusCode() == 201) {
-                    System.out.println(ANSI_GREEN + "OK   " + filePath + ANSI_RESET);
+                    treeParts.add("{\"path\":\"" + escapeJson(filePath) + "\",\"mode\":\"100644\",\"type\":\"blob\",\"sha\":\"" + blobSha + "\"}");
+                    System.out.println(ANSI_GREEN + "BLOB " + filePath + ANSI_RESET);
                     success++;
-                } else {
-                    System.out.println(ANSI_RED + "FAIL " + filePath + " (" + response.statusCode() + ")" + ANSI_RESET);
+                } catch (Exception e) {
+                    System.out.println(ANSI_RED + "FAIL " + filePath + " (" + e.getMessage() + ")" + ANSI_RESET);
                     failed++;
                 }
-
-            } catch (Exception e) {
-                System.out.println(ANSI_RED + "FAIL " + filePath + " (" + e.getMessage() + ")" + ANSI_RESET);
-                failed++;
             }
-        }
 
-        System.out.println();
-        System.out.println("Push complete: " + success + " succeeded, " + failed + " failed.");
+            if (treeParts.isEmpty()) {
+                System.err.println("No blobs created. Nothing to push.");
+                return;
+            }
+
+            // Step 4: Create a tree referencing all blobs
+            String treeBody = "{\"base_tree\":\"" + baseTreeSha + "\",\"tree\":[" + String.join(",", treeParts) + "]}";
+            String treeResponse = postJson(client, apiBase + "/git/trees", token, treeBody);
+            String newTreeSha = extractJsonValue(treeResponse, "sha");
+
+            // Step 5: Create a commit
+            String commitBody = "{\"message\":\"" + escapeJson(message) + "\",\"tree\":\"" + newTreeSha + "\",\"parents\":[\"" + headSha + "\"]}";
+            String newCommitResponse = postJson(client, apiBase + "/git/commits", token, commitBody);
+            String newCommitSha = extractJsonValue(newCommitResponse, "sha");
+
+            // Step 6: Update branch ref
+            String refBody = "{\"sha\":\"" + newCommitSha + "\"}";
+            patchJson(client, apiBase + "/git/refs/heads/" + branch, token, refBody);
+
+            System.out.println();
+            System.out.println("Push complete: " + success + " files in commit " + newCommitSha.substring(0, 7));
+            if (failed > 0) {
+                System.out.println(ANSI_RED + failed + " files failed" + ANSI_RESET);
+            }
+
+        } catch (Exception e) {
+            System.err.println("Push failed: " + e.getMessage());
+        }
     }
 
-    private String getFileSha(HttpClient client, String owner, String repo, String path, String token) {
-        try {
-            String apiUrl = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path;
+    private String getJson(HttpClient client, String url, String token) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Authorization", "Bearer " + token)
+                .header("Accept", "application/vnd.github+json")
+                .GET()
+                .build();
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(apiUrl))
-                    .header("Authorization", "Bearer " + token)
-                    .header("Accept", "application/vnd.github+json")
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                // Extract SHA from JSON response (simple parsing without a JSON library)
-                String body = response.body();
-                int shaIndex = body.indexOf("\"sha\":");
-                if (shaIndex >= 0) {
-                    int start = body.indexOf("\"", shaIndex + 6) + 1;
-                    int end = body.indexOf("\"", start);
-                    return body.substring(start, end);
-                }
-            }
-        } catch (Exception e) {
-            // File doesn't exist yet, that's fine
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IOException("GET " + url + " returned " + response.statusCode() + ": " + response.body());
         }
-        return null;
+        return response.body();
+    }
+
+    private String postJson(HttpClient client, String url, String token, String body) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Authorization", "Bearer " + token)
+                .header("Accept", "application/vnd.github+json")
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IOException("POST " + url + " returned " + response.statusCode() + ": " + response.body());
+        }
+        return response.body();
+    }
+
+    private String patchJson(HttpClient client, String url, String token, String body) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Authorization", "Bearer " + token)
+                .header("Accept", "application/vnd.github+json")
+                .header("Content-Type", "application/json")
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IOException("PATCH " + url + " returned " + response.statusCode() + ": " + response.body());
+        }
+        return response.body();
+    }
+
+    private String extractJsonValue(String json, String key) {
+        String searchKey = "\"" + key + "\"";
+        int keyIndex = json.indexOf(searchKey);
+        if (keyIndex < 0) {
+            throw new RuntimeException("Key \"" + key + "\" not found in JSON response");
+        }
+        int colonIndex = json.indexOf(":", keyIndex + searchKey.length());
+        int start = json.indexOf("\"", colonIndex + 1) + 1;
+        int end = json.indexOf("\"", start);
+        return json.substring(start, end);
+    }
+
+    private String extractNestedJsonValue(String json, String outerKey, String innerKey) {
+        String searchKey = "\"" + outerKey + "\"";
+        int outerIndex = json.indexOf(searchKey);
+        if (outerIndex < 0) {
+            throw new RuntimeException("Key \"" + outerKey + "\" not found in JSON response");
+        }
+        String remaining = json.substring(outerIndex);
+        return extractJsonValue(remaining, innerKey);
+    }
+
+    private String escapeJson(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
     }
 }
