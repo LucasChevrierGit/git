@@ -2,6 +2,7 @@ package mini_git.command;
 
 import mini_git.core.IndexManager;
 import mini_git.core.ObjectStore;
+import mini_git.core.RefManager;
 import mini_git.util.IgnoreManager;
 import picocli.CommandLine;
 
@@ -19,7 +20,7 @@ public class StatusCommand implements Runnable {
     private static final String RED = "\u001B[31m";
     private static final String RESET = "\u001B[0m";
 
-    private final static Path current_directory = Path.of(".");
+    private static Path current_directory = Path.of(".");
 
     @Override
     public void run() {
@@ -32,6 +33,7 @@ public class StatusCommand implements Runnable {
 
         Map<String, String> indexed = IndexManager.loadIndex();
         Set<String> working = listWorkingFiles();
+        Map<String, String> headTree = loadHeadTree();
 
         List<String> stagedNew = new ArrayList<>();
         List<String> unstagedDeleted = new ArrayList<>();
@@ -46,7 +48,10 @@ public class StatusCommand implements Runnable {
                 if (currentHash != null && !currentHash.equals(storedHash)) {
                     unstagedModified.add(file);
                 }
-                stagedNew.add(file);
+                String headHash = headTree.get(file);
+                if (headHash == null || !headHash.equals(storedHash)) {
+                    stagedNew.add(file);
+                }
             }
         }
         Collections.sort(stagedNew);
@@ -86,6 +91,41 @@ public class StatusCommand implements Runnable {
 
         if (stagedNew.isEmpty() && unstagedModified.isEmpty() && unstagedDeleted.isEmpty() && untracked.isEmpty()) {
             System.out.println("Nothing to report, working tree clean.");
+        }
+    }
+
+    private Map<String, String> loadHeadTree() {
+        try {
+            String headSha = RefManager.resolveHead();
+            if (headSha == null) return Collections.emptyMap();
+
+            Path commitPath = Path.of(".minigit", "objects", headSha);
+            if (!Files.exists(commitPath)) return Collections.emptyMap();
+
+            String commitContent = Files.readString(commitPath);
+            String treeSha = null;
+            for (String line : commitContent.split("\n")) {
+                if (line.startsWith("tree ")) {
+                    treeSha = line.substring(5).trim();
+                    break;
+                }
+            }
+            if (treeSha == null) return Collections.emptyMap();
+
+            Path treePath = Path.of(".minigit", "objects", treeSha);
+            if (!Files.exists(treePath)) return Collections.emptyMap();
+
+            Map<String, String> tree = new LinkedHashMap<>();
+            for (String line : Files.readAllLines(treePath)) {
+                // format: "100644 <hash> <path>"
+                String[] parts = line.split(" ", 3);
+                if (parts.length == 3) {
+                    tree.put(parts[2], parts[1]); // path -> hash
+                }
+            }
+            return tree;
+        } catch (IOException e) {
+            return Collections.emptyMap();
         }
     }
 

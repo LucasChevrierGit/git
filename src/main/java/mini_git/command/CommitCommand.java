@@ -68,7 +68,7 @@ public class CommitCommand implements Runnable {
 
             RefManager.updateHead(commitSha);
 
-            Files.writeString(indexPath, "");
+            // Keep the index intact — it represents the tracked state of the tree
 
             System.out.println(ANSI_GREEN + "[" + RefManager.getRefName() + " " + commitSha.substring(0, 7) + "] " + message + ANSI_RESET);
             System.out.println(indexLines.size() + " file(s) committed");
