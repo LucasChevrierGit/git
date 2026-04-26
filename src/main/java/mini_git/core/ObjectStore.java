@@ -11,6 +11,13 @@ public class ObjectStore {
 
     private static final Path OBJECTS_DIR = Path.of(".minigit", "objects");
 
+    /**
+     * Writes the string content to the object directory
+     * @param content String content
+     * @return The content SHA
+     * @throws IOException On File read
+     * @throws NoSuchAlgorithmException SHA-1 not found
+     */
     public static String writeObject(String content) throws IOException, NoSuchAlgorithmException {
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
         String sha = sha1Hex(bytes);
@@ -21,6 +28,13 @@ public class ObjectStore {
         return sha;
     }
 
+    /**
+     * Writes the byte[] content to the object directory (used for binary files)
+     * @param content binary file to store
+     * @return the content SHA
+     * @throws IOException On File read
+     * @throws NoSuchAlgorithmException SHA-1 not found
+     */
     public static String storeBlob(byte[] content) throws IOException, NoSuchAlgorithmException {
         String sha = sha1Hex(content);
         Path objectPath = OBJECTS_DIR.resolve(sha);

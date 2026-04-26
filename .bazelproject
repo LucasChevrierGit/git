@@ -1,6 +1,8 @@
 directories:
   src/main/java
+  src/test/java
 
 targets:
   //src/main/java/mini_git:mini_git
+  //src/test/java/mini_git/command:MergeCommandTest
 

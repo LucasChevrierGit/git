@@ -3,7 +3,6 @@ package mini_git.core;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -11,16 +10,20 @@ public class IndexManager {
 
     private static final Path INDEX_PATH = Path.of(".minigit", "index");
 
-    public static Map<String, String> loadIndex() {
+    /**
+     * Reads the index file and returns a map of tracked files to their blob SHAs
+     * @return Map of FilePath → Sha
+     */
+    public static Map<FilePath, Sha> loadIndex() {
         if (!Files.exists(INDEX_PATH)) {
             return new LinkedHashMap<>();
         }
         try {
-            Map<String, String> index = new LinkedHashMap<>();
+            Map<FilePath, Sha> index = new LinkedHashMap<>();
             for (String line : Files.readAllLines(INDEX_PATH)) {
                 String[] parts = line.split(" ", 2);
                 if (parts.length == 2) {
-                    index.put(parts[1], parts[0]); // path -> hash
+                    index.put(new FilePath(parts[1]), new Sha(parts[0]));
                 }
             }
             return index;
@@ -30,10 +33,14 @@ public class IndexManager {
         }
     }
 
-    public static void writeIndex(Map<String, String> index) {
+    /**
+     * Writes the index map back to disk
+     * @param index Map of FilePath → Sha
+     */
+    public static void writeIndex(Map<FilePath, Sha> index) {
         StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, String> entry : index.entrySet()) {
-            sb.append(entry.getValue()).append(" ").append(entry.getKey()).append(System.lineSeparator());
+        for (Map.Entry<FilePath, Sha> entry : index.entrySet()) {
+            sb.append(entry.getValue().value()).append(" ").append(entry.getKey().value()).append(System.lineSeparator());
         }
         try {
             Files.writeString(INDEX_PATH, sb.toString());

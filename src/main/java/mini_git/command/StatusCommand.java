@@ -1,8 +1,10 @@
 package mini_git.command;
 
+import mini_git.core.FilePath;
 import mini_git.core.IndexManager;
 import mini_git.core.ObjectStore;
 import mini_git.core.RefManager;
+import mini_git.core.Sha;
 import mini_git.util.IgnoreManager;
 import picocli.CommandLine;
 
@@ -16,9 +18,9 @@ import java.util.stream.Stream;
 @CommandLine.Command(name = "status", description = "Show the working tree status")
 public class StatusCommand implements Runnable {
 
-    private static final String GREEN = "\u001B[32m";
-    private static final String RED = "\u001B[31m";
-    private static final String RESET = "\u001B[0m";
+    private static final String GREEN = "[32m";
+    private static final String RED = "[31m";
+    private static final String RESET = "[0m";
 
     private static Path current_directory = Path.of(".");
 
@@ -31,16 +33,16 @@ public class StatusCommand implements Runnable {
             return;
         }
 
-        Map<String, String> indexed = IndexManager.loadIndex();
+        Map<FilePath, Sha> indexed = IndexManager.loadIndex();
         Set<String> working = listWorkingFiles();
-        Map<String, String> headTree = loadHeadTree();
+        Map<FilePath, Sha> headTree = loadHeadTree();
 
         List<String> stagedNew = new ArrayList<>();
         List<String> unstagedDeleted = new ArrayList<>();
         List<String> unstagedModified = new ArrayList<>();
-        for (Map.Entry<String, String> entry : indexed.entrySet()) {
-            String file = entry.getKey();
-            String storedHash = entry.getValue();
+        for (Map.Entry<FilePath, Sha> entry : indexed.entrySet()) {
+            String file = entry.getKey().value();
+            String storedHash = entry.getValue().value();
             if (!working.contains(file)) {
                 unstagedDeleted.add(file);
             } else {
@@ -48,8 +50,8 @@ public class StatusCommand implements Runnable {
                 if (currentHash != null && !currentHash.equals(storedHash)) {
                     unstagedModified.add(file);
                 }
-                String headHash = headTree.get(file);
-                if (headHash == null || !headHash.equals(storedHash)) {
+                Sha headHash = headTree.get(entry.getKey());
+                if (headHash == null || !headHash.value().equals(storedHash)) {
                     stagedNew.add(file);
                 }
             }
@@ -78,8 +80,11 @@ public class StatusCommand implements Runnable {
             System.out.println();
         }
 
+        Set<String> indexedPaths = indexed.keySet().stream()
+                .map(FilePath::value)
+                .collect(Collectors.toSet());
         Set<String> untracked = new TreeSet<>(working);
-        untracked.removeAll(indexed.keySet());
+        untracked.removeAll(indexedPaths);
         if (!untracked.isEmpty()) {
             System.out.println("Untracked files:");
             System.out.println("  (use \"minigit add <file>...\" to include in what will be committed)");
@@ -94,7 +99,7 @@ public class StatusCommand implements Runnable {
         }
     }
 
-    private Map<String, String> loadHeadTree() {
+    private Map<FilePath, Sha> loadHeadTree() {
         try {
             String headSha = RefManager.resolveHead();
             if (headSha == null) return Collections.emptyMap();
@@ -115,12 +120,11 @@ public class StatusCommand implements Runnable {
             Path treePath = Path.of(".minigit", "objects", treeSha);
             if (!Files.exists(treePath)) return Collections.emptyMap();
 
-            Map<String, String> tree = new LinkedHashMap<>();
+            Map<FilePath, Sha> tree = new LinkedHashMap<>();
             for (String line : Files.readAllLines(treePath)) {
-                // format: "100644 <hash> <path>"
                 String[] parts = line.split(" ", 3);
                 if (parts.length == 3) {
-                    tree.put(parts[2], parts[1]); // path -> hash
+                    tree.put(new FilePath(parts[2]), new Sha(parts[1]));
                 }
             }
             return tree;

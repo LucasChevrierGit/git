@@ -1,7 +1,9 @@
 package mini_git.command;
 
+import mini_git.core.FilePath;
 import mini_git.core.IndexManager;
 import mini_git.core.ObjectStore;
+import mini_git.core.Sha;
 import mini_git.util.IgnoreManager;
 import picocli.CommandLine;
 
@@ -22,20 +24,20 @@ public class AddCommand implements Runnable {
 
     @Override
     public void run() {
-        Map<String, String> indexed = IndexManager.loadIndex();
+        Map<FilePath, Sha> indexed = IndexManager.loadIndex();
         Set<String> ignored = IgnoreManager.loadIgnore();
         List<String> filesToAdd = findFilesToAdd(paths, indexed, ignored);
 
         for (String file : filesToAdd) {
             try {
                 byte[] content = Files.readAllBytes(Path.of(file));
-                String hashS = ObjectStore.storeBlob(content);
+                Sha sha = new Sha(ObjectStore.storeBlob(content));
 
-                if (hashS.equals(indexed.get(file))) {
+                if (sha.equals(indexed.get(new FilePath(file)))) {
                     continue;
                 }
 
-                indexed.put(file, hashS);
+                indexed.put(new FilePath(file), sha);
                 System.out.println("Added file: " + file);
             } catch (Exception e) {
                 System.err.println("Failed to read file: " + e.getMessage());
@@ -45,7 +47,7 @@ public class AddCommand implements Runnable {
         IndexManager.writeIndex(indexed);
     }
 
-    private List<String> findFilesToAdd(String[] args, Map<String, String> indexed, Set<String> ignored) {
+    private List<String> findFilesToAdd(String[] args, Map<FilePath, Sha> indexed, Set<String> ignored) {
         boolean addAll = Arrays.asList(args).contains(".");
 
         try (Stream<Path> paths = Files.walk(this.current_dir)) {
